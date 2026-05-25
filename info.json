@@ -1,0 +1,10 @@
+{
+  "participants": ["Andre Bento Soares"],
+  "social": [
+    "https://github.com/andrebsoares",
+    "https://www.linkedin.com/in/andrebsoares/"
+  ],
+  "source-code-repo": "https://github.com/andrebsoares/rinha-de-backend-2026-andre-dotnet",
+  "stack": ["dotnet", "nginx"],
+  "open_to_work": false
+}

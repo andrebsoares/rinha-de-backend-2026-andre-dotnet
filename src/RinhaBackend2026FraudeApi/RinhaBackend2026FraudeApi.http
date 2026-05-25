@@ -1,0 +1,6 @@
+@RinhaBackend2026FraudeApi_HostAddress = http://localhost:5268
+
+GET {{RinhaBackend2026FraudeApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
