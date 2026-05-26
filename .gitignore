@@ -7,6 +7,9 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/main/Dotnet.gitignore
 
+# Large binary resources (baked into Docker image, not tracked in git)
+resources/references.json.gz
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/

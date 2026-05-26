@@ -14,10 +14,13 @@ app.MapGet("/ready", () => Results.Ok());
 app.MapPost("/fraud-score", (FraudScoreRequest req) =>
 {
     var vector = Vectorizer.Vectorize(req, mccRisk);
-    return Results.Ok(new FraudScoreResponse(true, 0.0f)); // KNN stub
+    var (fraudScore, approved) = KnnSearch.Search(vector);
+    return Results.Ok(new FraudScoreResponse(approved, fraudScore));
 });
 
-app.Run();
+await ReferenceStore.LoadAsync(resourcesPath);
+
+await app.RunAsync();
 
 record FraudScoreResponse(bool approved, float fraud_score);
 
