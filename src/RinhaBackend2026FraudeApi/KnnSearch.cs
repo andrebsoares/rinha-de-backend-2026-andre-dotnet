@@ -82,17 +82,17 @@ internal static class KnnSearch
                 if (useSimd)
                 {
                     // Load 16 int16 reference values (14 real + 2 zero-padded).
-                    var rVec  = Vector256.LoadUnsafe(ref vectors[offset]);
+                    var rVec = Vector256.LoadUnsafe(ref vectors[offset]);
                     // int16 subtraction: |diff| ≤ 2Q = 8192 ≤ 32767 → no overflow.
-                    var diff  = Avx2.Subtract(qVec, rVec);
+                    var diff = Avx2.Subtract(qVec, rVec);
                     // VPMADDWD: adjacent int16 pairs → int32 sum-of-squares.
                     // Each pair ≤ 2×8192² = 134M; 8 pairs ≤ 1.07B ≤ INT32_MAX.
-                    var sq    = Avx2.MultiplyAddAdjacent(diff, diff);
+                    var sq = Avx2.MultiplyAddAdjacent(diff, diff);
                     // Horizontal sum of 8 int32 → scalar.
-                    var lo4   = sq.GetLower();
-                    var sum4  = Sse2.Add(lo4, sq.GetUpper());
-                    var hadd  = Ssse3.HorizontalAdd(sum4, sum4);
-                    dist      = hadd[0] + hadd[1];
+                    var lo4 = sq.GetLower();
+                    var sum4 = Sse2.Add(lo4, sq.GetUpper());
+                    var hadd = Ssse3.HorizontalAdd(sum4, sum4);
+                    dist = hadd[0] + hadd[1];
                 }
                 else
                 {

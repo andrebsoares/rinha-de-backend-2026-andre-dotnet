@@ -24,7 +24,7 @@ internal static class ReferenceStore
     private const int NIterations = 25;
     private const int Dims = 14;
     internal const int STRIDE = 16; // physical stride: 14 real dims + 2 zero-padding for SIMD alignment
-    internal const int Q      = 4096; // quantization scale: float v → (short)(v * Q)
+    internal const int Q = 4096; // quantization scale: float v → (short)(v * Q)
 
     internal static async Task LoadAsync(string resourcesPath)
     {
