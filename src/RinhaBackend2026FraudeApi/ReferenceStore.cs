@@ -3,10 +3,11 @@ using System.Text.Json;
 
 internal static class ReferenceStore
 {
-    // Flat row-major layout: vector i starts at i * Dims
-    // System.Half (2 bytes) instead of float (4 bytes) → 84 MB vs 168 MB per instance
-    // Sentinel -1.0 is exactly representable in Half
-    internal static Half[] Vectors = [];
+    // Flat row-major layout: vector i starts at i * STRIDE (physical)
+    // Dims=14 logical dimensions; STRIDE=16 adds 2 zero-padded slots for Vector256<short> AVX2 MADD.
+    // short (int16, scale Q=4096): 2 bytes/value → 96 MB vs 192 MB float per instance
+    // Sentinel -1.0 → -Q exactly; values [0,1] → [0,Q]. Max |diff|=2Q=8192 ≤ 32767 (no int16 overflow).
+    internal static short[] Vectors = [];
     internal static bool[] Labels = [];
     internal static int Count;
 
@@ -22,12 +23,14 @@ internal static class ReferenceStore
     private const int BatchSize = 10_000;
     private const int NIterations = 25;
     private const int Dims = 14;
+    internal const int STRIDE = 16; // physical stride: 14 real dims + 2 zero-padding for SIMD alignment
+    internal const int Q      = 4096; // quantization scale: float v → (short)(v * Q)
 
     internal static async Task LoadAsync(string resourcesPath)
     {
         const int MaxVectors = 3_000_000;
 
-        var vectors = new Half[MaxVectors * Dims];
+        var vectors = new short[MaxVectors * STRIDE];
         var labels = new bool[MaxVectors];
 
         var path = Path.Combine(resourcesPath, "references.json.gz");
@@ -41,10 +44,10 @@ internal static class ReferenceStore
         {
             if (entry is null) continue;
 
-            int offset = count * Dims;
+            int offset = count * STRIDE;
             var v = entry.Vector;
             for (int d = 0; d < Dims; d++)
-                vectors[offset + d] = (Half)v[d];
+                vectors[offset + d] = (short)(v[d] * Q);
 
             labels[count] = entry.Label == "fraud";
             count++;
@@ -74,10 +77,10 @@ internal static class ReferenceStore
         {
             int idx;
             do { idx = rng.Next(Count); } while (!chosen.Add(idx));
-            int srcOff = idx * Dims;
+            int srcOff = idx * STRIDE;
             int dstOff = c * Dims;
             for (int d = 0; d < Dims; d++)
-                centroids[dstOff + d] = (float)Vectors[srcOff + d];
+                centroids[dstOff + d] = Vectors[srcOff + d] / (float)Q;
         }
 
         // Phase B — Mini-batch K-Means (NIterations × BatchSize random vectors).
@@ -98,9 +101,9 @@ internal static class ReferenceStore
 
             for (int b = 0; b < BatchSize; b++)
             {
-                int srcOff = batchIndices[b] * Dims;
+                int srcOff = batchIndices[b] * STRIDE;
                 for (int d = 0; d < Dims; d++)
-                    vBuf[d] = (float)Vectors[srcOff + d];
+                    vBuf[d] = Vectors[srcOff + d] / (float)Q;
 
                 int c = FindNearestCentroid(vBuf, centroids);
                 int cnt = ++batchCounts[c];
@@ -116,10 +119,10 @@ internal static class ReferenceStore
             {
                 if (batchCounts[c] == 0)
                 {
-                    int srcOff = rng.Next(Count) * Dims;
+                    int srcOff = rng.Next(Count) * STRIDE;
                     int dstOff = c * Dims;
                     for (int d = 0; d < Dims; d++)
-                        centroids[dstOff + d] = (float)Vectors[srcOff + d];
+                        centroids[dstOff + d] = Vectors[srcOff + d] / (float)Q;
                 }
             }
         }
@@ -134,15 +137,16 @@ internal static class ReferenceStore
         // Parallel.For: each thread writes assignments[i] for its own i → no false sharing.
         // CA2014 suppressed: stackalloc is inside a delegate (separate stack frame per call),
         // not a raw loop — stack is freed on each lambda return, no accumulation.
-        var assignments = new int[Count];
+        // byte (not int) for cluster IDs: K_CLUSTERS=200 fits in byte (max 255) → 3 MB vs 12 MB.
+        var assignments = new byte[Count];
 #pragma warning disable CA2014
         Parallel.For(0, Count, i =>
         {
-            int srcOff = i * Dims;
+            int srcOff = i * STRIDE;
             Span<float> vBuf = stackalloc float[Dims];
             for (int d = 0; d < Dims; d++)
-                vBuf[d] = (float)Vectors[srcOff + d];
-            assignments[i] = FindNearestCentroid(vBuf, Centroids);
+                vBuf[d] = Vectors[srcOff + d] / (float)Q;
+            assignments[i] = (byte)FindNearestCentroid(vBuf, Centroids);
         });
 #pragma warning restore CA2014
 
@@ -165,14 +169,69 @@ internal static class ReferenceStore
             int c = assignments[i];
             invertedIndex[cursor[c]++] = i;
         }
-        // assignments[] goes out of scope here → GC reclaims its 12 MB.
 
-        InvertedIndex = invertedIndex;
+        // Explicitly release assignments (12 MB) before Phase D allocates visited[] (3 MB).
+        // Without this, the peak is: Vectors(96) + Labels(3) + assignments(12) + invertedIndex(12) + visited(3) + runtime ≈ 161 MB > 160 MB limit.
+        // The JIT does not guarantee GC between these allocations in the same method frame.
+        assignments = null!;
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+
         ClusterStart = clusterStart;
         ClusterSize = clusterSize;
 
         long avgCluster = Count / K_CLUSTERS;
         Console.WriteLine($"[IVF] Index ready in {sw.ElapsedMilliseconds}ms | K={K_CLUSTERS} avg_cluster={avgCluster:N0} nprobe={NPROBE}");
+        sw.Restart();
+
+        // Phase D — In-place cluster sort.
+        // Reorder Vectors[] and Labels[] so sorted position s holds the vector
+        // previously at invertedIndex[s]. Stage 2 in KnnSearch then scans
+        // clusterStart[c]..clusterStart[c]+clusterSize[c]-1 sequentially,
+        // engaging the hardware prefetcher and eliminating DRAM random-access latency.
+        var visited = new bool[Count]; // 3 MB, freed after method exits
+        Span<short> tempVec = stackalloc short[STRIDE]; // 32 bytes on stack
+
+        for (int start = 0; start < Count; start++)
+        {
+            if (visited[start]) continue;
+
+            int src = invertedIndex[start];
+            if (src == start)
+            {
+                visited[start] = true;
+                continue; // trivial 1-cycle: already in place
+            }
+
+            // Save the element at the head of this cycle.
+            int startOff = start * STRIDE;
+            for (int d = 0; d < STRIDE; d++) tempVec[d] = Vectors[startOff + d];
+            bool tempLabel = Labels[start];
+
+            int cur = start;
+            while (true)
+            {
+                int nxt = invertedIndex[cur];
+                visited[cur] = true;
+                if (nxt == start) break;
+
+                // Pull data from nxt into cur.
+                int curOff = cur * STRIDE;
+                int nxtOff = nxt * STRIDE;
+                for (int d = 0; d < STRIDE; d++) Vectors[curOff + d] = Vectors[nxtOff + d];
+                Labels[cur] = Labels[nxt];
+                cur = nxt;
+            }
+
+            // Close the cycle: cur is the last node whose successor was start.
+            int closeOff = cur * STRIDE;
+            for (int d = 0; d < STRIDE; d++) Vectors[closeOff + d] = tempVec[d];
+            Labels[cur] = tempLabel;
+        }
+
+        // InvertedIndex no longer needed after sort — release 12 MB.
+        InvertedIndex = Array.Empty<int>();
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        Console.WriteLine($"[IVF] Cluster sort done in {sw.ElapsedMilliseconds}ms");
     }
 
     // Finds the nearest centroid by squared Euclidean distance.

@@ -1,8 +1,13 @@
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
+
 internal static class KnnSearch
 {
     private const int K = 5;
     private const int Dims = 14;
-    // Compile-time alias — stays in sync with ReferenceStore without a runtime read.
+    private const int STRIDE = ReferenceStore.STRIDE;
+    private const int Q = ReferenceStore.Q;
+    // Compile-time aliases — stay in sync with ReferenceStore without a runtime read.
     private const int NPROBE = ReferenceStore.NPROBE;
 
     internal static (float fraudScore, bool approved) Search(float[] query)
@@ -42,15 +47,24 @@ internal static class KnnSearch
 
         // Stage 2: scan vectors in the NPROBE selected clusters.
         // ~NPROBE × avg_cluster_size = 10 × 15K = 150K vectors vs 3M brute-force (~20× speedup).
-        Span<float> topDist = stackalloc float[K];
+        // Distance is computed in quantized int32 space (no float conversion in hot path).
+        // Avx2.MultiplyAddAdjacent: 16 int16 diffs → 8 int32 pair-sums in 1 cycle → ~4× scalar speedup.
+        Span<int> topDist = stackalloc int[K];
         Span<bool> topLabel = stackalloc bool[K];
-        topDist.Fill(float.MaxValue);
+        topDist.Fill(int.MaxValue);
 
         var vectors = ReferenceStore.Vectors;
         var labels = ReferenceStore.Labels;
-        var invertedIndex = ReferenceStore.InvertedIndex;
         var clusterStart = ReferenceStore.ClusterStart;
         var clusterSize = ReferenceStore.ClusterSize;
+
+        // Quantize query once per request: float → short with scale Q=4096.
+        // STRIDE=16: 14 real dims + 2 zero-padded → fills Vector256<short> exactly.
+        Span<short> qShort = stackalloc short[STRIDE]; // zero-initialized
+        for (int d = 0; d < Dims; d++) qShort[d] = (short)(query[d] * Q);
+
+        bool useSimd = Avx2.IsSupported && Ssse3.IsSupported;
+        var qVec = Vector256.LoadUnsafe(ref qShort[0]); // load once, reuse across all clusters
 
         for (int p = 0; p < NPROBE; p++)
         {
@@ -62,14 +76,32 @@ internal static class KnnSearch
 
             for (int s = start; s < end; s++)
             {
-                int i = invertedIndex[s];
-                int offset = i * Dims;
+                int offset = s * STRIDE;
+                int dist;
 
-                float dist = 0f;
-                for (int d = 0; d < Dims; d++)
+                if (useSimd)
                 {
-                    float diff = query[d] - (float)vectors[offset + d];
-                    dist += diff * diff;
+                    // Load 16 int16 reference values (14 real + 2 zero-padded).
+                    var rVec  = Vector256.LoadUnsafe(ref vectors[offset]);
+                    // int16 subtraction: |diff| ≤ 2Q = 8192 ≤ 32767 → no overflow.
+                    var diff  = Avx2.Subtract(qVec, rVec);
+                    // VPMADDWD: adjacent int16 pairs → int32 sum-of-squares.
+                    // Each pair ≤ 2×8192² = 134M; 8 pairs ≤ 1.07B ≤ INT32_MAX.
+                    var sq    = Avx2.MultiplyAddAdjacent(diff, diff);
+                    // Horizontal sum of 8 int32 → scalar.
+                    var lo4   = sq.GetLower();
+                    var sum4  = Sse2.Add(lo4, sq.GetUpper());
+                    var hadd  = Ssse3.HorizontalAdd(sum4, sum4);
+                    dist      = hadd[0] + hadd[1];
+                }
+                else
+                {
+                    dist = 0;
+                    for (int d = 0; d < Dims; d++)
+                    {
+                        int diff = qShort[d] - vectors[offset + d];
+                        dist += diff * diff;
+                    }
                 }
 
                 // Find the largest distance in our top-K window — evict if current is closer.
@@ -80,7 +112,7 @@ internal static class KnnSearch
                 if (dist < topDist[maxIdx])
                 {
                     topDist[maxIdx] = dist;
-                    topLabel[maxIdx] = labels[i];
+                    topLabel[maxIdx] = labels[s];
                 }
             }
         }

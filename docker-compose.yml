@@ -18,6 +18,8 @@ services:
 
   api1:
     build: .
+    environment:
+      - DOTNET_GCConserveMemory=9
     healthcheck:
       test:
         ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9999/ready"]
@@ -29,10 +31,12 @@ services:
       resources:
         limits:
           cpus: "0.45"
-          memory: "160MB"
+          memory: "165MB"
 
   api2:
     build: .
+    environment:
+      - DOTNET_GCConserveMemory=9
     healthcheck:
       test:
         ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9999/ready"]
@@ -44,4 +48,4 @@ services:
       resources:
         limits:
           cpus: "0.45"
-          memory: "160MB"
+          memory: "165MB"
