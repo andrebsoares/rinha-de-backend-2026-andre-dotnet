@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using System.Text.Json;
 
 internal static class ReferenceStore
@@ -12,18 +14,20 @@ internal static class ReferenceStore
     internal static int Count;
 
     // IVF index — written once at startup, read-only during queries.
-    // Centroids stored as float32 (not Half): 1000×14×4 = 56 KB; full precision for cluster boundaries.
+    // Centroids stored as float32 (not Half): 2000×16×4 = 128 KB; full precision for cluster boundaries.
+    // STRIDE_FLOAT=16: 14 real dims + 2 zero-padded for Vector256<float> AVX2 alignment.
     internal static float[] Centroids = [];
     internal static int[] InvertedIndex = [];  // flat, Count entries ordered by cluster
     internal static int[] ClusterStart = [];   // ClusterStart[c] = first position of cluster c in InvertedIndex
     internal static int[] ClusterSize = [];    // number of vectors in cluster c
 
-    internal const int K_CLUSTERS = 1000;
-    internal const int NPROBE = 15;
+    internal const int K_CLUSTERS = 2000;
+    internal const int NPROBE = 20;
     private const int BatchSize = 15_000;
-    private const int NIterations = 50;
+    private const int NIterations = 75;
     private const int Dims = 14;
-    internal const int STRIDE = 16; // physical stride: 14 real dims + 2 zero-padding for SIMD alignment
+    internal const int STRIDE = 16; // short[] physical stride: 14 real dims + 2 zero-padding for AVX2 MADD
+    internal const int STRIDE_FLOAT = 16; // float[] centroid stride: 14 real dims + 2 zero-padding for AVX2 float
     internal const int Q = 4096; // quantization scale: float v → (short)(v * Q)
 
     internal static async Task LoadAsync(string resourcesPath)
@@ -71,14 +75,14 @@ internal static class ReferenceStore
         // Pick K_CLUSTERS distinct vector indices as starting centroids.
         // Simple random init keeps startup time predictable (~0ms).
         // K-Means++ would improve initial quality but costs K extra full-data passes (~6s extra).
-        var centroids = new float[K_CLUSTERS * Dims];
+        var centroids = new float[K_CLUSTERS * STRIDE_FLOAT];
         var chosen = new HashSet<int>(K_CLUSTERS);
         for (int c = 0; c < K_CLUSTERS; c++)
         {
             int idx;
             do { idx = rng.Next(Count); } while (!chosen.Add(idx));
             int srcOff = idx * STRIDE;
-            int dstOff = c * Dims;
+            int dstOff = c * STRIDE_FLOAT;
             for (int d = 0; d < Dims; d++)
                 centroids[dstOff + d] = Vectors[srcOff + d] / (float)Q;
         }
@@ -107,7 +111,7 @@ internal static class ReferenceStore
 
                 int c = FindNearestCentroid(vBuf, centroids);
                 int cnt = ++batchCounts[c];
-                int cOff = c * Dims;
+                int cOff = c * STRIDE_FLOAT;
                 float scale = 1f / cnt;
                 for (int d = 0; d < Dims; d++)
                     centroids[cOff + d] += (vBuf[d] - centroids[cOff + d]) * scale;
@@ -120,7 +124,7 @@ internal static class ReferenceStore
                 if (batchCounts[c] == 0)
                 {
                     int srcOff = rng.Next(Count) * STRIDE;
-                    int dstOff = c * Dims;
+                    int dstOff = c * STRIDE_FLOAT;
                     for (int d = 0; d < Dims; d++)
                         centroids[dstOff + d] = Vectors[srcOff + d] / (float)Q;
                 }
@@ -235,21 +239,55 @@ internal static class ReferenceStore
     }
 
     // Finds the nearest centroid by squared Euclidean distance.
-    // Used during K-Means training (local centroids array) and full assignment (static Centroids).
+    // Used during K-Means training (local centroids) and Phase C full assignment (static Centroids).
+    // AVX2 path: loads 2×float8 per centroid (STRIDE_FLOAT=16; dims 14-15 are zero-padded in both
+    // query and centroids, so their contribution to the squared distance is always zero).
     private static int FindNearestCentroid(ReadOnlySpan<float> vBuf, float[] centroids)
     {
         float bestDist = float.MaxValue;
         int bestC = 0;
-        for (int c = 0; c < K_CLUSTERS; c++)
+
+        if (Avx2.IsSupported)
         {
-            int cOff = c * Dims;
-            float dist = 0f;
-            for (int d = 0; d < Dims; d++)
+            // Zero-pad query to STRIDE_FLOAT so SIMD reads 16 floats safely.
+            Span<float> qPad = stackalloc float[STRIDE_FLOAT]; // zero-initialized; dims 14-15 stay 0
+            vBuf.CopyTo(qPad);
+            var qLo = Vector256.LoadUnsafe(ref qPad[0]);  // dims 0-7
+            var qHi = Vector256.LoadUnsafe(ref qPad[8]);  // dims 8-15
+
+            for (int c = 0; c < K_CLUSTERS; c++)
             {
-                float diff = vBuf[d] - centroids[cOff + d];
-                dist += diff * diff;
+                int cOff = c * STRIDE_FLOAT;
+                var cLo = Vector256.LoadUnsafe(ref centroids[cOff]);
+                var cHi = Vector256.LoadUnsafe(ref centroids[cOff + 8]);
+                var dLo = Avx.Subtract(qLo, cLo);
+                var dHi = Avx.Subtract(qHi, cHi);
+                var sqLo = Avx.Multiply(dLo, dLo);
+                var sqHi = Avx.Multiply(dHi, dHi);
+                // Pairwise add: sum8[i] = sqLo[i] + sqHi[i] (pairs dims 0+8, 1+9, ..., 7+15)
+                var sum8 = Avx.Add(sqLo, sqHi);
+                var lo4 = sum8.GetLower();
+                var hi4 = sum8.GetUpper();
+                var sum4 = Sse.Add(lo4, hi4);
+                var ha1 = Sse3.HorizontalAdd(sum4, sum4);
+                var ha2 = Sse3.HorizontalAdd(ha1, ha1);
+                float dist = ha2[0];
+                if (dist < bestDist) { bestDist = dist; bestC = c; }
             }
-            if (dist < bestDist) { bestDist = dist; bestC = c; }
+        }
+        else
+        {
+            for (int c = 0; c < K_CLUSTERS; c++)
+            {
+                int cOff = c * STRIDE_FLOAT;
+                float dist = 0f;
+                for (int d = 0; d < Dims; d++)
+                {
+                    float diff = vBuf[d] - centroids[cOff + d];
+                    dist += diff * diff;
+                }
+                if (dist < bestDist) { bestDist = dist; bestC = c; }
+            }
         }
         return bestC;
     }

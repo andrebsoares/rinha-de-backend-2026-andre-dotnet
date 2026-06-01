@@ -22,26 +22,55 @@ internal static class KnnSearch
 
         var centroids = ReferenceStore.Centroids;
         int kClusters = ReferenceStore.K_CLUSTERS;
+        int strideFlt = ReferenceStore.STRIDE_FLOAT;
 
-        for (int c = 0; c < kClusters; c++)
+        // AVX2 path: 2×float8 loads per centroid (STRIDE_FLOAT=16; dims 14-15 zero-padded → zero contribution).
+        if (Avx2.IsSupported)
         {
-            int cOff = c * Dims;
-            float dist = 0f;
-            for (int d = 0; d < Dims; d++)
+            Span<float> qPad = stackalloc float[ReferenceStore.STRIDE_FLOAT]; // zero-initialized
+            for (int d = 0; d < Dims; d++) qPad[d] = query[d];
+            var qLo = Vector256.LoadUnsafe(ref qPad[0]);
+            var qHi = Vector256.LoadUnsafe(ref qPad[8]);
+
+            for (int c = 0; c < kClusters; c++)
             {
-                float diff = query[d] - centroids[cOff + d];
-                dist += diff * diff;
+                int cOff = c * strideFlt;
+                var cLo = Vector256.LoadUnsafe(ref centroids[cOff]);
+                var cHi = Vector256.LoadUnsafe(ref centroids[cOff + 8]);
+                var dLo = Avx.Subtract(qLo, cLo);
+                var dHi = Avx.Subtract(qHi, cHi);
+                var sqLo = Avx.Multiply(dLo, dLo);
+                var sqHi = Avx.Multiply(dHi, dHi);
+                var sum8 = Avx.Add(sqLo, sqHi);
+                var lo4 = sum8.GetLower();
+                var hi4 = sum8.GetUpper();
+                var sum4 = Sse.Add(lo4, hi4);
+                var ha1 = Sse3.HorizontalAdd(sum4, sum4);
+                var ha2 = Sse3.HorizontalAdd(ha1, ha1);
+                float dist = ha2[0];
+
+                // Linear max-scan to find the eviction slot (NPROBE=20 → 19 compares; beats heap).
+                int maxIdx = 0;
+                for (int j = 1; j < NPROBE; j++)
+                    if (centDist[j] > centDist[maxIdx]) maxIdx = j;
+                if (dist < centDist[maxIdx]) { centDist[maxIdx] = dist; centId[maxIdx] = c; }
             }
-
-            // Linear max-scan to find the eviction slot (NPROBE=10 → 9 compares; beats heap).
-            int maxIdx = 0;
-            for (int j = 1; j < NPROBE; j++)
-                if (centDist[j] > centDist[maxIdx]) maxIdx = j;
-
-            if (dist < centDist[maxIdx])
+        }
+        else
+        {
+            for (int c = 0; c < kClusters; c++)
             {
-                centDist[maxIdx] = dist;
-                centId[maxIdx] = c;
+                int cOff = c * strideFlt;
+                float dist = 0f;
+                for (int d = 0; d < Dims; d++)
+                {
+                    float diff = query[d] - centroids[cOff + d];
+                    dist += diff * diff;
+                }
+                int maxIdx = 0;
+                for (int j = 1; j < NPROBE; j++)
+                    if (centDist[j] > centDist[maxIdx]) maxIdx = j;
+                if (dist < centDist[maxIdx]) { centDist[maxIdx] = dist; centId[maxIdx] = c; }
             }
         }
 
