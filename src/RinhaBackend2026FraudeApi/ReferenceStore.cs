@@ -12,16 +12,16 @@ internal static class ReferenceStore
     internal static int Count;
 
     // IVF index — written once at startup, read-only during queries.
-    // Centroids stored as float32 (not Half): 200×14×4 = 11 KB; full precision for cluster boundaries.
+    // Centroids stored as float32 (not Half): 1000×14×4 = 56 KB; full precision for cluster boundaries.
     internal static float[] Centroids = [];
     internal static int[] InvertedIndex = [];  // flat, Count entries ordered by cluster
     internal static int[] ClusterStart = [];   // ClusterStart[c] = first position of cluster c in InvertedIndex
     internal static int[] ClusterSize = [];    // number of vectors in cluster c
 
-    internal const int K_CLUSTERS = 200;
-    internal const int NPROBE = 10;
-    private const int BatchSize = 10_000;
-    private const int NIterations = 25;
+    internal const int K_CLUSTERS = 1000;
+    internal const int NPROBE = 15;
+    private const int BatchSize = 15_000;
+    private const int NIterations = 50;
     private const int Dims = 14;
     internal const int STRIDE = 16; // physical stride: 14 real dims + 2 zero-padding for SIMD alignment
     internal const int Q = 4096; // quantization scale: float v → (short)(v * Q)
@@ -137,8 +137,8 @@ internal static class ReferenceStore
         // Parallel.For: each thread writes assignments[i] for its own i → no false sharing.
         // CA2014 suppressed: stackalloc is inside a delegate (separate stack frame per call),
         // not a raw loop — stack is freed on each lambda return, no accumulation.
-        // byte (not int) for cluster IDs: K_CLUSTERS=200 fits in byte (max 255) → 3 MB vs 12 MB.
-        var assignments = new byte[Count];
+        // ushort (not int) for cluster IDs: K_CLUSTERS=1000 fits in ushort (max 65535) → 6 MB vs 12 MB.
+        var assignments = new ushort[Count];
 #pragma warning disable CA2014
         Parallel.For(0, Count, i =>
         {
@@ -146,7 +146,7 @@ internal static class ReferenceStore
             Span<float> vBuf = stackalloc float[Dims];
             for (int d = 0; d < Dims; d++)
                 vBuf[d] = Vectors[srcOff + d] / (float)Q;
-            assignments[i] = (byte)FindNearestCentroid(vBuf, Centroids);
+            assignments[i] = (ushort)FindNearestCentroid(vBuf, Centroids);
         });
 #pragma warning restore CA2014
 
@@ -170,8 +170,8 @@ internal static class ReferenceStore
             invertedIndex[cursor[c]++] = i;
         }
 
-        // Explicitly release assignments (12 MB) before Phase D allocates visited[] (3 MB).
-        // Without this, the peak is: Vectors(96) + Labels(3) + assignments(12) + invertedIndex(12) + visited(3) + runtime ≈ 161 MB > 160 MB limit.
+        // Explicitly release assignments (6 MB) before Phase D allocates visited[] (3 MB).
+        // Without this, the peak is: Vectors(96) + Labels(3) + assignments(6) + invertedIndex(12) + visited(3) + runtime ≈ 162 MB > 160 MB limit.
         // The JIT does not guarantee GC between these allocations in the same method frame.
         assignments = null!;
         GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
