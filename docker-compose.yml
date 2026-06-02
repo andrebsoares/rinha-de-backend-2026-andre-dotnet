@@ -17,7 +17,7 @@ services:
           memory: "20MB"
 
   api1:
-    image: andre09soares/rinha-backend-2026-dotnet:v1
+    image: andre09soares/rinha-backend-2026-dotnet:v2
     environment:
       - DOTNET_GCHeapHardLimit=141557760
     healthcheck:
@@ -34,7 +34,7 @@ services:
           memory: "165MB"
 
   api2:
-    image: andre09soares/rinha-backend-2026-dotnet:v1
+    image: andre09soares/rinha-backend-2026-dotnet:v2
     environment:
       - DOTNET_GCHeapHardLimit=141557760
     healthcheck:
