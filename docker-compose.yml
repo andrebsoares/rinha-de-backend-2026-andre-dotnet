@@ -19,7 +19,7 @@ services:
   api1:
     build: .
     environment:
-      - DOTNET_GCHeapHardLimit=141557760
+      - DOTNET_GCConserveMemory=9
     healthcheck:
       test:
         ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9999/ready"]
@@ -36,7 +36,7 @@ services:
   api2:
     build: .
     environment:
-      - DOTNET_GCHeapHardLimit=141557760
+      - DOTNET_GCConserveMemory=9
     healthcheck:
       test:
         ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9999/ready"]
