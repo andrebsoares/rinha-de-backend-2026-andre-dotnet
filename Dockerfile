@@ -6,6 +6,7 @@ COPY src/RinhaBackend2026FraudeApi/ .
 RUN dotnet publish -c Release -o /app/publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine
+RUN apk add --no-cache wget
 WORKDIR /app
 COPY --from=build /app/publish .
 COPY resources/ ./resources/
