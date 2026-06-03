@@ -19,7 +19,7 @@ services:
   api1:
     build: .
     environment:
-      - DOTNET_GCConserveMemory=9
+      - DOTNET_GCLatencyMode=SustainedLowLatency
       - DOTNET_EnableDiagnostics=0
     healthcheck:
       test:
@@ -37,7 +37,7 @@ services:
   api2:
     build: .
     environment:
-      - DOTNET_GCConserveMemory=9
+      - DOTNET_GCLatencyMode=SustainedLowLatency
       - DOTNET_EnableDiagnostics=0
     healthcheck:
       test:
