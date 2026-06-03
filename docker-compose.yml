@@ -29,7 +29,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-      start_period: 120s
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -47,7 +47,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-      start_period: 120s
+      start_period: 30s
     deploy:
       resources:
         limits:
