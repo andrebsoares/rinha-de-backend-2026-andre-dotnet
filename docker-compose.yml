@@ -20,6 +20,7 @@ services:
     build: .
     environment:
       - DOTNET_GCLatencyMode=SustainedLowLatency
+      - DOTNET_GCHeapCount=1
       - DOTNET_EnableDiagnostics=0
     healthcheck:
       test:
@@ -38,6 +39,7 @@ services:
     build: .
     environment:
       - DOTNET_GCLatencyMode=SustainedLowLatency
+      - DOTNET_GCHeapCount=1
       - DOTNET_EnableDiagnostics=0
     healthcheck:
       test:
