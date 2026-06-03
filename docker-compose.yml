@@ -5,8 +5,6 @@ services:
       - "9999:9999"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    sysctls:
-      net.core.somaxconn: "65535"
     depends_on:
       api1:
         condition: service_healthy
