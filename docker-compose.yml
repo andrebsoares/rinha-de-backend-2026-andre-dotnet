@@ -20,6 +20,7 @@ services:
     image: andre09soares/rinha-backend-2026-dotnet:v5
     environment:
       - DOTNET_GCLatencyMode=SustainedLowLatency
+      - DOTNET_GCHeapCount=1
       - DOTNET_EnableDiagnostics=0
     healthcheck:
       test:
@@ -38,6 +39,7 @@ services:
     image: andre09soares/rinha-backend-2026-dotnet:v5
     environment:
       - DOTNET_GCLatencyMode=SustainedLowLatency
+      - DOTNET_GCHeapCount=1
       - DOTNET_EnableDiagnostics=0
     healthcheck:
       test:
