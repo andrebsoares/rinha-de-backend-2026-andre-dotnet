@@ -30,7 +30,41 @@ internal static class ReferenceStore
     internal const int STRIDE_FLOAT = 16; // float[] centroid stride: 14 real dims + 2 zero-padding for AVX2 float
     internal const int Q = 4096; // quantization scale: float v → (short)(v * Q)
 
+    /// <summary>
+    /// Runtime path: try to load the pre-built IVF binary index first.
+    /// If not found, fall back to the full JSON+gzip+K-Means pipeline (for local dev).
+    /// </summary>
     internal static async Task LoadAsync(string resourcesPath)
+    {
+        var indexPath = Path.Combine(resourcesPath, "ivf_index.bin");
+        if (File.Exists(indexPath))
+        {
+            LoadBinary(indexPath);
+            Console.WriteLine($"[ReferenceStore] IVF index loaded ({Count:N0} vectors, K={K_CLUSTERS})");
+            return;
+        }
+
+        // Fallback: full pipeline for local development without a pre-built index.
+        await LoadReferencesJson(resourcesPath);
+        BuildIvfIndex();
+    }
+
+    /// <summary>
+    /// --build-index path: load references.json.gz, run K-Means + cluster sort,
+    /// serialize to ivf_index.bin. Called once during `docker build`.
+    /// The index-builder stage has no memory limit, so the peak ~145 MB
+    /// during K-Means is safe. At runtime, LoadBinary uses only ~100 MB.
+    /// </summary>
+    internal static async Task BuildIndexAsync(string resourcesPath)
+    {
+        await LoadReferencesJson(resourcesPath);
+        BuildIvfIndex();
+        var indexPath = Path.Combine(resourcesPath, "ivf_index.bin");
+        SaveBinary(indexPath);
+        Console.WriteLine($"[ReferenceStore] IVF index saved to {indexPath}");
+    }
+
+    private static async Task LoadReferencesJson(string resourcesPath)
     {
         const int MaxVectors = 3_000_000;
 
@@ -62,8 +96,6 @@ internal static class ReferenceStore
         Count = count;
 
         Console.WriteLine($"[ReferenceStore] Loaded {count:N0} vectors");
-
-        BuildIvfIndex();
     }
 
     private static void BuildIvfIndex()
@@ -236,6 +268,92 @@ internal static class ReferenceStore
         InvertedIndex = Array.Empty<int>();
         GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
         Console.WriteLine($"[IVF] Cluster sort done in {sw.ElapsedMilliseconds}ms");
+    }
+
+    // ---- Binary serialization ----
+
+    /// <summary>
+    /// Save the fully built IVF index to a binary file.
+    /// Format: version(4) | count(4) | K_CLUSTERS(4) | NPROBE(4) | labels(count bytes)
+    /// | vectors(count*STRIDE*2 bytes as short) | centroids(K*STRIDE_FLOAT*4 bytes)
+    /// | clusterStart(K*4 bytes) | clusterSize(K*4 bytes)
+    ///
+    /// Total: ~12 + 3 + 96 + 0.13 + 0.008 + 0.008 ≈ 99 MB
+    /// </summary>
+    private static void SaveBinary(string path)
+    {
+        using var fs = File.OpenWrite(path);
+        using var bw = new BinaryWriter(fs);
+
+        bw.Write(1); // version
+        bw.Write(Count);
+        bw.Write(K_CLUSTERS);
+        bw.Write(NPROBE);
+
+        // Labels: bool → byte
+        for (int i = 0; i < Count; i++)
+            bw.Write(Labels[i]);
+
+        // Vectors: short[]
+        for (int i = 0; i < Count * STRIDE; i++)
+            bw.Write(Vectors[i]);
+
+        // Centroids: float[]
+        for (int i = 0; i < K_CLUSTERS * STRIDE_FLOAT; i++)
+            bw.Write(Centroids[i]);
+
+        // ClusterStart: int[]
+        for (int i = 0; i < K_CLUSTERS; i++)
+            bw.Write(ClusterStart[i]);
+
+        // ClusterSize: int[]
+        for (int i = 0; i < K_CLUSTERS; i++)
+            bw.Write(ClusterSize[i]);
+
+        Console.WriteLine($"[ReferenceStore] Saved IVF index: {new FileInfo(path).Length / 1_000_000} MB");
+    }
+
+    /// <summary>
+    /// Load a pre-built IVF index from disk. Fast path for runtime startup (~2-3s).
+    /// </summary>
+    private static void LoadBinary(string path)
+    {
+        using var fs = File.OpenRead(path);
+        using var br = new BinaryReader(fs);
+
+        int version = br.ReadInt32();
+        if (version != 1)
+            throw new InvalidDataException($"IVF index version mismatch: expected 1, got {version}");
+
+        Count = br.ReadInt32();
+        int kClusters = br.ReadInt32();
+        int nprobe = br.ReadInt32();
+
+        // Validate constants match what was baked at build time
+        if (kClusters != K_CLUSTERS || nprobe != NPROBE)
+            throw new InvalidDataException(
+                $"IVF params mismatch: built(K={kClusters},nprobe={nprobe}) vs code(K={K_CLUSTERS},nprobe={NPROBE})");
+
+        Labels = new bool[Count];
+        Vectors = new short[Count * STRIDE];
+        Centroids = new float[K_CLUSTERS * STRIDE_FLOAT];
+        ClusterStart = new int[K_CLUSTERS];
+        ClusterSize = new int[K_CLUSTERS];
+
+        for (int i = 0; i < Count; i++)
+            Labels[i] = br.ReadBoolean();
+
+        for (int i = 0; i < Count * STRIDE; i++)
+            Vectors[i] = br.ReadInt16();
+
+        for (int i = 0; i < K_CLUSTERS * STRIDE_FLOAT; i++)
+            Centroids[i] = br.ReadSingle();
+
+        for (int i = 0; i < K_CLUSTERS; i++)
+            ClusterStart[i] = br.ReadInt32();
+
+        for (int i = 0; i < K_CLUSTERS; i++)
+            ClusterSize[i] = br.ReadInt32();
     }
 
     // Finds the nearest centroid by squared Euclidean distance.

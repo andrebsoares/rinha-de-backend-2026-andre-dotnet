@@ -1,13 +1,22 @@
 using System.Text.Json;
 
+var resourcesPath = Environment.GetEnvironmentVariable("RESOURCES_PATH") ?? "resources";
+
+// --build-index mode: load references.json.gz, build IVF index, save to ivf_index.bin, exit.
+// Runs during `docker build` with no memory limit — the binary is baked into the image layer.
+if (args.Contains("--build-index"))
+{
+    await ReferenceStore.BuildIndexAsync(resourcesPath);
+    Console.WriteLine("[Program] Index built successfully. Exiting.");
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Use compile-time source-generated JSON serialization instead of runtime reflection.
 // Reduces JSON overhead from ~400µs/req to ~80µs/req, cutting CPU utilization and CFS throttle events.
 builder.Services.ConfigureHttpJsonOptions(opts =>
     opts.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default));
-
-var resourcesPath = Environment.GetEnvironmentVariable("RESOURCES_PATH") ?? "resources";
 
 var mccRisk = JsonSerializer.Deserialize<Dictionary<string, float>>(
     File.ReadAllText(Path.Combine(resourcesPath, "mcc_risk.json")))!;

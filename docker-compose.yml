@@ -5,6 +5,8 @@ services:
       - "9999:9999"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    sysctls:
+      net.core.somaxconn: "65535"
     depends_on:
       api1:
         condition: service_healthy
@@ -20,6 +22,7 @@ services:
     build: .
     environment:
       - DOTNET_GCConserveMemory=9
+      - DOTNET_EnableDiagnostics=0
     healthcheck:
       test:
         ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9999/ready"]
@@ -37,6 +40,7 @@ services:
     build: .
     environment:
       - DOTNET_GCConserveMemory=9
+      - DOTNET_EnableDiagnostics=0
     healthcheck:
       test:
         ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9999/ready"]
@@ -49,3 +53,8 @@ services:
         limits:
           cpus: "0.45"
           memory: "165MB"
+
+networks:
+  default:
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
