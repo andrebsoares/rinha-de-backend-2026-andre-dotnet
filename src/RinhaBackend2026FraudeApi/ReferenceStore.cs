@@ -22,7 +22,7 @@ internal static class ReferenceStore
     internal static int[] ClusterSize = [];    // number of vectors in cluster c
 
     internal const int K_CLUSTERS = 4000;
-    internal const int NPROBE = 10;
+    internal const int NPROBE = 15;
     private const int BatchSize = 15_000;
     private const int NIterations = 200;
     private const int Dims = 14;
