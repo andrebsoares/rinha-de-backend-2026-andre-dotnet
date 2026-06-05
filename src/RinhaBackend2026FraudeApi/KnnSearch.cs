@@ -10,7 +10,7 @@ internal static class KnnSearch
     // Compile-time aliases — stay in sync with ReferenceStore without a runtime read.
     private const int NPROBE = ReferenceStore.NPROBE;
 
-    internal static (float fraudScore, bool approved) Search(float[] query)
+    internal static (float fraudScore, bool approved) Search(ReadOnlySpan<float> query)
     {
         // Stage 1: find the NPROBE nearest centroids.
         // K_CLUSTERS=2000 centroids × 14 dims via AVX2 (~0.5µs per centroid → ~1ms for 2000).

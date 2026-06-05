@@ -22,7 +22,8 @@ public class VectorizerTests
             isOnline: false, cardPresent: true, kmFromHome: 29.23f,
             lastTx: null);
 
-        var v = Vectorizer.Vectorize(req, MccRisk);
+        Span<float> v = stackalloc float[14];
+        Vectorizer.Vectorize(req, MccRisk, v);
 
         Assert.Equal(-1f, v[5]);
         Assert.Equal(-1f, v[6]);
@@ -37,7 +38,8 @@ public class VectorizerTests
         var req = MakeRequest(
             requestedAt: new DateTime(2026, 3, 11, 18, 45, 53, DateTimeKind.Utc));
 
-        var v = Vectorizer.Vectorize(req, MccRisk);
+        Span<float> v = stackalloc float[14];
+        Vectorizer.Vectorize(req, MccRisk, v);
 
         Assert.Equal(2f / 6f, v[4], precision: 4);
     }
@@ -52,7 +54,8 @@ public class VectorizerTests
                 timestamp: new DateTime(2026, 3, 11, 14, 58, 35, DateTimeKind.Utc),
                 km_from_current: 18.86f));
 
-        var v = Vectorizer.Vectorize(req, MccRisk);
+        Span<float> v = stackalloc float[14];
+        Vectorizer.Vectorize(req, MccRisk, v);
 
         Assert.Equal(325f / 1440f, v[5], precision: 4);
     }
@@ -63,7 +66,8 @@ public class VectorizerTests
     {
         var req = MakeRequest(amount: 4368.82f, avgAmount: 68.88f);
 
-        var v = Vectorizer.Vectorize(req, MccRisk);
+        Span<float> v = stackalloc float[14];
+        Vectorizer.Vectorize(req, MccRisk, v);
 
         Assert.Equal(1.0f, v[2]);
     }
@@ -75,13 +79,15 @@ public class VectorizerTests
     {
         // Merchant ausente da lista
         var reqUnknown = MakeRequest(merchantId: "MERC-NOVO", knownMerchants: ["MERC-001"], mcc: "9999");
-        var v1 = Vectorizer.Vectorize(reqUnknown, MccRisk);
+        Span<float> v1 = stackalloc float[14];
+        Vectorizer.Vectorize(reqUnknown, MccRisk, v1);
         Assert.Equal(1f, v1[11]); // desconhecido
         Assert.Equal(0.5f, v1[12]); // mcc ausente → default
 
         // Merchant conhecido
         var reqKnown = MakeRequest(merchantId: "MERC-001", knownMerchants: ["MERC-001"], mcc: "5411");
-        var v2 = Vectorizer.Vectorize(reqKnown, MccRisk);
+        Span<float> v2 = stackalloc float[14];
+        Vectorizer.Vectorize(reqKnown, MccRisk, v2);
         Assert.Equal(0f, v2[11]); // conhecido
         Assert.Equal(0.15f, v2[12]); // mcc 5411
     }

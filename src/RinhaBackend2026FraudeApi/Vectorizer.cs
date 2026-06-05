@@ -2,7 +2,7 @@ internal static class Vectorizer
 {
     private static float Clamp(float x) => x < 0f ? 0f : x > 1f ? 1f : x;
 
-    internal static float[] Vectorize(FraudScoreRequest req, IReadOnlyDictionary<string, float> mccRisk)
+    internal static void Vectorize(FraudScoreRequest req, IReadOnlyDictionary<string, float> mccRisk, Span<float> result)
     {
         var tx = req.transaction;
         var customer = req.customer;
@@ -39,22 +39,19 @@ internal static class Vectorizer
         // [12] mcc_risk — default 0.5 se ausente
         float mccRiskValue = mccRisk.TryGetValue(merchant.mcc, out float risk) ? risk : 0.5f;
 
-        return
-        [
-            Clamp(tx.amount / 10000f),                                    // [0]  amount
-            Clamp(tx.installments / 12f),                                 // [1]  installments
-            Clamp((tx.amount / customer.avg_amount) / 10f),               // [2]  amount_vs_avg
-            requestedAt.Hour / 23f,                                       // [3]  hour_of_day
-            dayOfWeek,                                                     // [4]  day_of_week
-            minutesSinceLast,                                              // [5]  minutes_since_last_tx
-            kmFromLast,                                                    // [6]  km_from_last_tx
-            Clamp(terminal.km_from_home / 1000f),                         // [7]  km_from_home
-            Clamp(customer.tx_count_24h / 20f),                           // [8]  tx_count_24h
-            terminal.is_online ? 1f : 0f,                                 // [9]  is_online
-            terminal.card_present ? 1f : 0f,                              // [10] card_present
-            isUnknown ? 1f : 0f,                                          // [11] unknown_merchant
-            mccRiskValue,                                                  // [12] mcc_risk
-            Clamp(merchant.avg_amount / 10000f),                          // [13] merchant_avg_amount
-        ];
+        result[0] = Clamp(tx.amount / 10000f);                          // amount
+        result[1] = Clamp(tx.installments / 12f);                       // installments
+        result[2] = Clamp((tx.amount / customer.avg_amount) / 10f);     // amount_vs_avg
+        result[3] = requestedAt.Hour / 23f;                             // hour_of_day
+        result[4] = dayOfWeek;                                           // day_of_week
+        result[5] = minutesSinceLast;                                    // minutes_since_last_tx
+        result[6] = kmFromLast;                                          // km_from_last_tx
+        result[7] = Clamp(terminal.km_from_home / 1000f);               // km_from_home
+        result[8] = Clamp(customer.tx_count_24h / 20f);                 // tx_count_24h
+        result[9] = terminal.is_online ? 1f : 0f;                       // is_online
+        result[10] = terminal.card_present ? 1f : 0f;                    // card_present
+        result[11] = isUnknown ? 1f : 0f;                                // unknown_merchant
+        result[12] = mccRiskValue;                                        // mcc_risk
+        result[13] = Clamp(merchant.avg_amount / 10000f);
     }
 }

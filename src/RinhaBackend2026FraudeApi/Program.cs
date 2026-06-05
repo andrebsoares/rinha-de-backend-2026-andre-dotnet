@@ -27,7 +27,8 @@ app.MapGet("/ready", () => Results.Ok());
 
 app.MapPost("/fraud-score", (FraudScoreRequest req) =>
 {
-    var vector = Vectorizer.Vectorize(req, mccRisk);
+    Span<float> vector = stackalloc float[14];
+    Vectorizer.Vectorize(req, mccRisk, vector);
     var (fraudScore, approved) = KnnSearch.Search(vector);
     return Results.Ok(new FraudScoreResponse(approved, fraudScore));
 });
@@ -36,8 +37,8 @@ await ReferenceStore.LoadAsync(resourcesPath);
 
 // Prevents thread pool starvation on low-core machines.
 // Default min threads (2) causes request queueing under burst load + GC pauses.
-// 32 workers / 8 IO keep latency predictable at the cost of ~24 MB stack commitment.
-ThreadPool.SetMinThreads(32, 8);
+// 2 workers / 4 IO keep latency predictable at the cost of ~24 MB stack commitment.
+ThreadPool.SetMinThreads(2, 4);
 
 await app.RunAsync();
 
