@@ -17,11 +17,10 @@ services:
           memory: "20MB"
 
   api1:
-    image: andre09soares/rinha-backend-2026-dotnet:v14
+    image: andre09soares/rinha-backend-2026-dotnet:v15
     environment:
       - DOTNET_GCLatencyMode=SustainedLowLatency
       - DOTNET_GCHeapCount=1
-      - DOTNET_gcConcurrent=0
       - DOTNET_EnableDiagnostics=0
     healthcheck:
       test:
@@ -37,11 +36,10 @@ services:
           memory: "165MB"
 
   api2:
-    image: andre09soares/rinha-backend-2026-dotnet:v14
+    image: andre09soares/rinha-backend-2026-dotnet:v15
     environment:
       - DOTNET_GCLatencyMode=SustainedLowLatency
       - DOTNET_GCHeapCount=1
-      - DOTNET_gcConcurrent=0
       - DOTNET_EnableDiagnostics=0
     healthcheck:
       test:
