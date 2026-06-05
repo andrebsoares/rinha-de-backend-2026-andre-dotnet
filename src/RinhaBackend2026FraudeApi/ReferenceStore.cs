@@ -21,7 +21,7 @@ internal static class ReferenceStore
     internal static int[] ClusterStart = [];   // ClusterStart[c] = first position of cluster c in InvertedIndex
     internal static int[] ClusterSize = [];    // number of vectors in cluster c
 
-    internal const int K_CLUSTERS = 2000;
+    internal const int K_CLUSTERS = 4000;
     internal const int NPROBE = 10;
     private const int BatchSize = 15_000;
     private const int NIterations = 75;
