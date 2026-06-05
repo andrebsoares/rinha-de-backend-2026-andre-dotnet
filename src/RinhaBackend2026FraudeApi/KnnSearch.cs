@@ -13,7 +13,7 @@ internal static class KnnSearch
     internal static (float fraudScore, bool approved) Search(float[] query)
     {
         // Stage 1: find the NPROBE nearest centroids.
-        // K_CLUSTERS centroids × 14 dims via AVX2 (~0.5µs per centroid → ~2ms for 4000).
+        // K_CLUSTERS=2000 centroids × 14 dims via AVX2 (~0.5µs per centroid → ~1ms for 2000).
         // stackalloc: zero heap allocation, no GC pressure per request.
         Span<float> centDist = stackalloc float[NPROBE];
         Span<int> centId = stackalloc int[NPROBE];
@@ -75,7 +75,7 @@ internal static class KnnSearch
         }
 
         // Stage 2: scan vectors in the NPROBE selected clusters.
-        // K=4000, avg_cluster=750, NPROBE=10 → ~7500 vectors vs 3M brute-force (~400× speedup).
+        // K=2000, avg_cluster=1500, NPROBE=20 → ~30,000 vectors vs 3M brute-force (~100× speedup).
         // Distance is computed in quantized int32 space (no float conversion in hot path).
         // Avx2.MultiplyAddAdjacent: 16 int16 diffs → 8 int32 pair-sums in 1 cycle → ~4× scalar speedup.
         Span<int> topDist = stackalloc int[K];

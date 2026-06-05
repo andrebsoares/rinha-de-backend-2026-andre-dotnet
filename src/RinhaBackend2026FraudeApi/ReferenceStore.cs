@@ -14,15 +14,15 @@ internal static class ReferenceStore
     internal static int Count;
 
     // IVF index — written once at startup, read-only during queries.
-    // Centroids stored as float32 (not Half): 4000×16×4 = 256 KB; full precision for cluster boundaries.
+    // Centroids stored as float32 (not Half): 2000×16×4 = 128 KB; full precision for cluster boundaries.
     // STRIDE_FLOAT=16: 14 real dims + 2 zero-padded for Vector256<float> AVX2 alignment.
     internal static float[] Centroids = [];
     internal static int[] InvertedIndex = [];  // flat, Count entries ordered by cluster
     internal static int[] ClusterStart = [];   // ClusterStart[c] = first position of cluster c in InvertedIndex
     internal static int[] ClusterSize = [];    // number of vectors in cluster c
 
-    internal const int K_CLUSTERS = 4000;
-    internal const int NPROBE = 40;
+    internal const int K_CLUSTERS = 2000;
+    internal const int NPROBE = 20;
     private const int BatchSize = 15_000;
     private const int NIterations = 200;
     private const int Dims = 14;
@@ -254,7 +254,7 @@ internal static class ReferenceStore
         // Parallel.For: each thread writes assignments[i] for its own i → no false sharing.
         // CA2014 suppressed: stackalloc is inside a delegate (separate stack frame per call),
         // not a raw loop — stack is freed on each lambda return, no accumulation.
-        // ushort (not int) for cluster IDs: K_CLUSTERS=4000 fits in ushort (max 65535) → 6 MB vs 12 MB.
+        // ushort (not int) for cluster IDs: K_CLUSTERS=2000 fits in ushort (max 65535) → 6 MB vs 12 MB.
         var assignments = new ushort[Count];
 #pragma warning disable CA2014
         Parallel.For(0, Count, i =>
@@ -267,7 +267,7 @@ internal static class ReferenceStore
         });
 #pragma warning restore CA2014
 
-        // Count cluster sizes (sequential scan — avoids Interlocked overhead on int[4000]).
+        // Count cluster sizes (sequential scan — avoids Interlocked overhead on int[2000]).
         var clusterSize = new int[K_CLUSTERS];
         for (int i = 0; i < Count; i++)
             clusterSize[assignments[i]]++;
