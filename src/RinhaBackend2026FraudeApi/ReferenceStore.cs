@@ -1,34 +1,37 @@
 using System.IO.Compression;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Text.Json;
+using System.Threading;
 
 internal static class ReferenceStore
 {
-    // Flat row-major layout: vector i starts at i * STRIDE (physical)
-    // Dims=14 logical dimensions; STRIDE=16 adds 2 zero-padded slots for Vector256<short> AVX2 MADD.
-    // short (int16, scale Q=4096): 2 bytes/value → 96 MB vs 192 MB float per instance
-    // Sentinel -1.0 → -Q exactly; values [0,1] → [0,Q]. Max |diff|=2Q=8192 ≤ 32767 (no int16 overflow).
+    // Flat row-major layout: vector i starts at i * STRIDE.
+    // STRIDE=16: 14 dims + 2 zero-padding para Vector256<short> AVX2 MADD.
+    // short (int16, scale Q=4096): 2 bytes/value → ~6 MB vs ~12 MB float por instância.
     internal static short[] Vectors = [];
     internal static bool[] Labels = [];
     internal static int Count;
 
-    // IVF index — written once at startup, read-only during queries.
-    // Centroids stored as float32 (not Half): 2000×16×4 = 128 KB; full precision for cluster boundaries.
-    // STRIDE_FLOAT=16: 14 real dims + 2 zero-padded for Vector256<float> AVX2 alignment.
+    // IVF index — gravado uma vez no build, read-only durante queries.
     internal static float[] Centroids = [];
-    internal static int[] InvertedIndex = [];  // flat, Count entries ordered by cluster
-    internal static int[] ClusterStart = [];   // ClusterStart[c] = first position of cluster c in InvertedIndex
-    internal static int[] ClusterSize = [];    // number of vectors in cluster c
+    internal static int[] InvertedIndex = [];
+    internal static int[] ClusterStart = [];
+    internal static int[] ClusterSize = [];
+    // ClusterRadius removed - pruning overhead was +37% p99 with no benefit in this dataset
+    // internal static float[] ClusterRadius = []; // raio LINEAR por cluster (sqrt da distância quadrada máxima)
 
     internal const int K_CLUSTERS = 4000;
     internal const int NPROBE = 30;
     private const int BatchSize = 15_000;
     private const int NIterations = 200;
     private const int Dims = 14;
-    internal const int STRIDE = 16; // short[] physical stride: 14 real dims + 2 zero-padding for AVX2 MADD
-    internal const int STRIDE_FLOAT = 16; // float[] centroid stride: 14 real dims + 2 zero-padding for AVX2 float
-    internal const int Q = 4096; // quantization scale: float v → (short)(v * Q)
+    internal const int STRIDE = 16;
+    internal const int STRIDE_FLOAT = 16;
+    internal const int Q = 4096;
+    internal const int CACHE_BLOCK_VECTORS = 8; // mantido para compatibilidade com Dockerfile --build-index
 
     /// <summary>
     /// Runtime path: try to load the pre-built IVF binary index first.
@@ -287,14 +290,17 @@ internal static class ReferenceStore
             invertedIndex[cursor[c]++] = i;
         }
 
+        // NOTE: Cluster radii calculation removed - pruning overhead was +37% p99 with no benefit
+        // Dataset analysis shows clusters not well-separated enough for effective triangle-inequality pruning
+        
         // Explicitly release assignments (6 MB) before Phase D allocates visited[] (3 MB).
-        // Without this, the peak is: Vectors(96) + Labels(3) + assignments(6) + invertedIndex(12) + visited(3) + runtime ≈ 162 MB > 160 MB limit.
-        // The JIT does not guarantee GC between these allocations in the same method frame.
         assignments = null!;
         GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
 
         ClusterStart = clusterStart;
         ClusterSize = clusterSize;
+        // ClusterRadius removed - pruning not beneficial for this dataset
+        Console.WriteLine($"[IVF] Inverted index built. Average cluster size: {(float)Count / K_CLUSTERS:F1}");
 
         long avgCluster = Count / K_CLUSTERS;
         Console.WriteLine($"[IVF] Index ready in {sw.ElapsedMilliseconds}ms | K={K_CLUSTERS} avg_cluster={avgCluster:N0} nprobe={NPROBE}");
@@ -391,6 +397,9 @@ internal static class ReferenceStore
         for (int i = 0; i < K_CLUSTERS; i++)
             bw.Write(ClusterSize[i]);
 
+        // NOTE: ClusterRadius removed in version 3+ (pruning overhead +37% p99 with no benefit)
+        // Binary format compatible with version 2 via skip in LoadBinary
+
         Console.WriteLine($"[ReferenceStore] Saved IVF index: {new FileInfo(path).Length / 1_000_000} MB");
     }
 
@@ -420,6 +429,7 @@ internal static class ReferenceStore
         Centroids = new float[K_CLUSTERS * STRIDE_FLOAT];
         ClusterStart = new int[K_CLUSTERS];
         ClusterSize = new int[K_CLUSTERS];
+        // ClusterRadius removed - pruning not beneficial for this dataset
 
         for (int i = 0; i < Count; i++)
             Labels[i] = br.ReadBoolean();
@@ -435,6 +445,14 @@ internal static class ReferenceStore
 
         for (int i = 0; i < K_CLUSTERS; i++)
             ClusterSize[i] = br.ReadInt32();
+
+        // ClusterRadius removed from binary format (version 3+)
+        // If the file was built with version 2, skip radius bytes (compatibility)
+        if (br.BaseStream.Position < br.BaseStream.Length)
+        {
+            // Skip K_CLUSTERS floats (pruning data not used in current version)
+            br.BaseStream.Seek(K_CLUSTERS * 4, SeekOrigin.Current);
+        }
     }
 
     // Finds the nearest centroid by squared Euclidean distance.
@@ -489,6 +507,20 @@ internal static class ReferenceStore
             }
         }
         return bestC;
+    }
+
+    // Computes squared Euclidean distance from vBuf (float, Dims) to centroid c in centroids array.
+    // Used offline during build — correctness over micro-optimization.
+    private static float DistanceToCentroid(ReadOnlySpan<float> vBuf, float[] centroids, int c)
+    {
+        int cOff = c * STRIDE_FLOAT;
+        float dist = 0f;
+        for (int d = 0; d < Dims; d++)
+        {
+            float diff = vBuf[d] - centroids[cOff + d];
+            dist += diff * diff;
+        }
+        return dist;
     }
 
     private sealed class ReferenceEntry
